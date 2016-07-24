@@ -10,12 +10,15 @@ from evdev import InputDevice, categorize, ecodes
 from select import select
 from threading import Thread, Lock
 
+from BaseHTTPServer import BaseHTTPRequestHandler,HTTPServer
+
 #
 # python squeezebox: https://github.com/jinglemansweep/PyLMS/blob/master/pylms/player.py
 #
 
 url = 'http://rpi:9000/jsonrpc.js'
 player_id = 'b8:27:eb:3d:83:04'
+jive_http_server_port = 12345
 
 RoAPin = 11    # pin11
 RoBPin = 12    # pin12
@@ -33,8 +36,8 @@ player_name = 'tpi'
 amp_host = 'localhost'
 amp_port = 54321
 
-#use_lightsensor = False
-use_lightsensor = True
+use_lightsensor = False
+#use_lightsensor = True
 #do_reboot = False
 do_reboot = True
 
@@ -167,6 +170,19 @@ class MySqueeze:
         # start amp if running on start
         self._amp_on_start()
 
+        # start http server for Jive remote
+        self.t = Thread(target=self._select_player, args=())
+        self.t.start()
+
+    def _select_player(self):
+        """ Waits on http for the active player """
+
+	self.http_server = HTTPServer(('', jive_http_server_port), myJiveHandler)
+	self.logger.info('Started httpserver on port %i' % jive_http_server_port)
+	
+        #Wait forever for incoming http requests
+        self.logger.debug("Wait forever for incoming http requests")
+        self.http_server.serve_forever()
 
     def _amp_on_start(self):
 	# start amp if player is running
@@ -254,7 +270,7 @@ class MySqueeze:
             return False
 
 
-class   MyRotary:
+class  MyRotary:
     def __init__(self,logger=None):
         """ Encoder Controlling Class"""
         self.logger = logger or logging.getLogger(__name__)
@@ -367,14 +383,31 @@ class Reboot:
             ds.change_vt(display_vt)
 
 
+class myJiveHandler(BaseHTTPRequestHandler):
+	
+    def __init__(self, *args):
+        """ change Player for encoder """
+        self.logger = logger or logging.getLogger(__name__)
+        BaseHTTPRequestHandler.__init__(self, *args)
 
+    #Handler for the GET requests
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-type','text/plain')
+        self.end_headers()
+        # Send the html message
+        self.wfile.write("ok")
 
+        # do something with uri
+        self.logger.debug("GOT URL: %s" %  self.path)
+
+        return
 
 if __name__ == '__main__':     # Program start from here
 
     GPIO.setmode(GPIO.BOARD)       # Numbers GPIOs by physical location
 
-    logging.basicConfig(format='%(asctime)s %(levelname)s %(message)s', level=logging.INFO)
+    logging.basicConfig(format='%(asctime)s %(levelname)s %(message)s', level=logging.DEBUG)
     logger = logging.getLogger(__name__)
 
     # main reboot handling
