@@ -1,9 +1,10 @@
 #!/usr/bin/env python
 import RPi.GPIO as GPIO
+import subprocess
 import time
 import json
 import urllib2
-import logging,sys
+import logging,sys, os
 import socket
 from evdev import InputDevice, categorize, ecodes
 from select import select
@@ -21,15 +22,21 @@ RoBPin = 12    # pin12
 RoSPin = 13    # pin13
 LightPin = 15  # light pin
 MovePin = 16   # movement detector
+rebootPin = 40
 
+display_vt = 5
 maxVolume = 100
 stepper = 10
 
 # AMP Defaults
+player_name = 'tpi'
 amp_host = 'localhost'
 amp_port = 54321
 
+#use_lightsensor = False
 use_lightsensor = True
+#do_reboot = False
+do_reboot = True
 
 class Display:
     def __init__(self,timer,logger=None):
@@ -47,14 +54,26 @@ class Display:
         self.logger.debug("Touch Dev: %s" % self.dev)
         
         GPIO.setup(LightPin, GPIO.OUT)
+        GPIO.output(LightPin, GPIO.LOW)
         GPIO.setup(MovePin, GPIO.IN,pull_up_down=GPIO.PUD_DOWN)
 
         # start display
+        if self.change_vt(display_vt):
+            self.logger.debug("Waiting for Display to change")
+            time.sleep(0.3)
         self.on()
 
         # light Sensor
         if use_lightsensor:
             GPIO.add_event_detect(MovePin, GPIO.RISING, callback=self.reset, bouncetime=500) # wait for raising
+
+    def change_vt(self,vt):
+        current_vt = int(subprocess.check_output(["/bin/fgconsole"]))
+        if current_vt != vt:
+            self.logger.debug("Changing VT from %i to %i" % (current_vt, vt) )
+            subprocess.call(['/bin/chvt', str(vt)]) 
+            return True
+        return False
 
     def _sleeper(self):
         while self.count < self.maxcount:
@@ -111,22 +130,17 @@ class Display:
             self.logger.debug("Turning Display Off")
             self.is_on = False
 
-        # start watcher thread
-        #t = Thread(target=self._watch_key, args=())
-        #t.start()
-
-
-
 
     def on(self):
-        if not self.is_on:
-            # start sleeper thread
-            t = Thread(target=self._sleeper, args=())
-            t.start()
+        if use_lightsensor:
+            if not self.is_on:
+                # start sleeper thread
+                t = Thread(target=self._sleeper, args=())
+                t.start()
 
-            GPIO.output(LightPin, GPIO.HIGH)
-            self.logger.debug("Turning Display On")
-            self.is_on = True
+                GPIO.output(LightPin, GPIO.HIGH)
+                self.logger.debug("Turning Display On")
+                self.is_on = True
 
     def reset(self,ev=None):
         self.DisplayLock.acquire()
@@ -145,9 +159,10 @@ class MySqueeze:
 
         # init class
         self.player = self._get_player(playername)
-        self.name = playername
+        self.player['name'] = playername
         self._get_volume()
-        self.logger.info('Daemon started')
+        self.logger.debug('Player Volume is %i' % self.player['volume'])
+        self.logger.info('Squeze Daemon started')
 
         # start amp if running on start
         self._amp_on_start()
@@ -156,7 +171,7 @@ class MySqueeze:
     def _amp_on_start(self):
 	# start amp if player is running
 	if self.is_running():
-            self.logger.debug('player %s is running, turning amp on' % self.name)
+            self.logger.debug('player %s is running, turning amp on' % self.player['name'])
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.settimeout(2)
             try:
@@ -196,10 +211,12 @@ class MySqueeze:
                 if play['isplayer'] == 1 and play['name'] == name:
                     logger.debug("found player: %s" % play['name'])
                     return play
+            self.logger.error("Player %s not found" % name)
 
     def _get_volume(self):
-        """ gets volume for all players or for one """
+        """ gets volume for player """
         self.player['volume'] = int(float(self.js_request([self.player['playerid'],["mixer","volume","?"]])['result']['_volume']))
+
 
     def volume(self):
         """ return volume """
@@ -288,17 +305,85 @@ class   MyRotary:
             sq.play()
 
 
+class Reboot:
+    def __init__(self,logger=None):
+        """ Rebooting on Button """
+        self.CountLock = Lock()
+        self.count = 0
+        self.maxcount = 3
+        self.timer = 0
+        self.maxtime = 10
+        self.counting = False
+        self.logger = logger or logging.getLogger(__name__)
+
+        GPIO.setup(rebootPin, GPIO.IN,pull_up_down=GPIO.PUD_DOWN)    
+        GPIO.add_event_detect(rebootPin, GPIO.RISING, callback=self.handle, bouncetime=500)
+
+    def handle(self,args):
+        self.count += 1
+        self.logger.debug("reboot count %i" % self.count)
+
+        if self.count == 1:
+            t = Thread(target=self._sleeper, args=())
+            t.start()
+
+    def _sleeper(self):
+        self.logger.debug("Creating Reboot Counter")
+        while self.timer < self.maxtime:
+
+            # reboot if count >3
+            if self.count >= self.maxcount:
+                self.count = self.maxcount
+                self.reboot()
+                break
+
+            self.CountLock.acquire()
+            self.timer += 1
+            self.logger.debug("Reseting: %i" % self.timer)
+            self.CountLock.release()
+            time.sleep(1) 
+
+        self.logger.debug("reseting reboot count")
+        self.count = 0
+        self.timer = 0
+
+
+    def reboot(self):
+        self.logger.debug("REBOOTING")
+        cow = subprocess.check_output(["/usr/games/cowsay", "REBOOT"])
+        fd = os.open('/dev/tty1', os.O_WRONLY | os.O_NOCTTY) 
+        tty = os.fdopen(fd, 'w', 1)
+        del fd
+        for i in range(120):
+            tty.write("\n")
+        tty.write(cow)
+        for i in range(20):
+            tty.write("\n")
+        ds.change_vt(1)
+        time.sleep(2)
+        if do_reboot:
+            subprocess.call(["/sbin/reboot"])
+        else:
+            ds.change_vt(display_vt)
+
+
+
+
 
 if __name__ == '__main__':     # Program start from here
 
     GPIO.setmode(GPIO.BOARD)       # Numbers GPIOs by physical location
 
-    logging.basicConfig(format='%(asctime)s %(levelname)s %(message)s', level=logging.DEBUG)
+    logging.basicConfig(format='%(asctime)s %(levelname)s %(message)s', level=logging.INFO)
     logger = logging.getLogger(__name__)
 
-    sq = MySqueeze('tpi')
+    # main reboot handling
+    Reboot()
+
+
+    sq = MySqueeze(player_name)
     rt = MyRotary()
-    ds = Display(30)
+    ds = Display(60)
 
     try:
         while True:
