@@ -36,8 +36,8 @@ player_name = 'tpi'
 amp_host = 'localhost'
 amp_port = 54321
 
-use_lightsensor = False
-#use_lightsensor = True
+#use_lightsensor = False
+use_lightsensor = True
 #do_reboot = False
 do_reboot = True
 
@@ -163,14 +163,12 @@ class MySqueeze:
         # init class
         self.player = self._get_player(playername)
         self.player['name'] = playername
+        self.players = []
         self._get_volume()
         self.logger.debug('Player Volume is %i' % self.player['volume'])
         self.logger.info('Squeze Daemon started')
 
-        self.players = []
-        self.active_player = None
-        
-        # get all players as thread every 30 seconds
+        # get all players as thread every 10 seconds
         self.t_stop = Event()
         self.t = Thread(target=self.get_players, args=(1, self.t_stop))
         self.t.start()
@@ -230,7 +228,6 @@ class MySqueeze:
                 self.logger.info("new player is: %s" % name)
             else:
                 self.logger.error("new player %s not found on Server" % name)
-
 
     def _get_player(self,name):
             """ how mayn players are there """
@@ -298,7 +295,6 @@ class MySqueeze:
         else:
             return False
 
-
 class  MyRotary:
     def __init__(self,logger=None):
         """ Encoder Controlling Class"""
@@ -348,7 +344,6 @@ class  MyRotary:
             sq.pause()
         else:
             sq.play()
-
 
 class Reboot:
     def __init__(self,logger=None):
@@ -413,7 +408,6 @@ class Reboot:
 
 
 class MyHttpHandler(BaseHTTPRequestHandler):
-	
     def __init__(self,  *args):
         """ change Player for encoder """
         self.logger = logger or logging.getLogger(__name__)
@@ -474,7 +468,7 @@ if __name__ == '__main__':     # Program start from here
 
     GPIO.setmode(GPIO.BOARD)       # Numbers GPIOs by physical location
 
-    logging.basicConfig(format='%(asctime)s %(levelname)s %(message)s', level=logging.DEBUG)
+    logging.basicConfig(format='%(asctime)s %(levelname)s %(message)s', level=logging.INFO)
     logger = logging.getLogger(__name__)
 
     # main reboot handling
