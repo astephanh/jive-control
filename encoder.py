@@ -8,7 +8,7 @@ import logging,sys, os
 import socket
 from evdev import InputDevice, categorize, ecodes
 from select import select
-from threading import Thread, Lock
+from threading import Thread, Event, Lock
 
 from BaseHTTPServer import BaseHTTPRequestHandler,HTTPServer
 
@@ -167,22 +167,22 @@ class MySqueeze:
         self.logger.debug('Player Volume is %i' % self.player['volume'])
         self.logger.info('Squeze Daemon started')
 
+        self.players = []
+        self.active_player = None
+        
+        # get all players as thread every 30 seconds
+        self.t_stop = Event()
+        self.t = Thread(target=self.get_players, args=(1, self.t_stop))
+        self.t.start()
+        self.logger.debug("Player-Search Thread started")
+
         # start amp if running on start
         self._amp_on_start()
 
-        # start http server for Jive remote
-        self.t = Thread(target=self._select_player, args=())
-        self.t.start()
 
-    def _select_player(self):
-        """ Waits on http for the active player """
-
-	self.http_server = HTTPServer(('', jive_http_server_port), myJiveHandler)
-	self.logger.info('Started httpserver on port %i' % jive_http_server_port)
-	
-        #Wait forever for incoming http requests
-        self.logger.debug("Wait forever for incoming http requests")
-        self.http_server.serve_forever()
+    def destroy(self):
+        self.t_stop.set()
+        self.logger.debug("Player-Search Thread stopped")
 
     def _amp_on_start(self):
 	# start amp if player is running
@@ -220,25 +220,54 @@ class MySqueeze:
         res = urllib2.urlopen(req)
         return  json.loads(res.read())
 
+    def setplayer(self, name):
+        """ sets player for rotary encoder """
+
+        # only if name differs from current player
+        if self.player['name'] != name:
+            self.player = self._get_player(name)
+            if self.player['name'] == name:
+                self.logger.info("new player is: %s" % name)
+            else:
+                self.logger.error("new player %s not found on Server" % name)
+
+
     def _get_player(self,name):
             """ how mayn players are there """
             player = self.js_request(["",["players","0",]])['result']
             for play in player['players_loop']:
-                if play['isplayer'] == 1 and play['name'] == name:
+                if play['isplayer'] == 1 and play['name'] == name and play['connected'] == 1:
                     logger.debug("found player: %s" % play['name'])
                     return play
             self.logger.error("Player %s not found" % name)
 
+    def get_players(self, arg1, stop_event):
+            """ get all players """
+            while(not stop_event.is_set()):
+                players = self.js_request(["",["players","0",]])['result']
+                self.logger.debug("%i player found" % len(players['players_loop']))
+                # Add new players
+                for player in players['players_loop']:
+                    if player['isplayer'] == 1 and player['connected'] == 1: 
+                        if not player in self.players:
+                            self.players.append(player)
+                            logger.info("Added player: %s" % player['name'])
+                # remove old players
+                for player in self.players:
+                    if not player in players['players_loop']:
+                        self.players.remove(player)
+                        logger.info("Deleted player: %s" % player['name'])
+                stop_event.wait(10)
+
     def _get_volume(self):
         """ gets volume for player """
+        self.logger.debug("Getting volume for %s" % self.player['name'])
         self.player['volume'] = int(float(self.js_request([self.player['playerid'],["mixer","volume","?"]])['result']['_volume']))
-
 
     def volume(self):
         """ return volume """
         self._get_volume()
         return self.player['volume']
-
 
     def vol_up(self,value):
         """ increase Volume """
@@ -383,9 +412,9 @@ class Reboot:
             ds.change_vt(display_vt)
 
 
-class myJiveHandler(BaseHTTPRequestHandler):
+class MyHttpHandler(BaseHTTPRequestHandler):
 	
-    def __init__(self, *args):
+    def __init__(self,  *args):
         """ change Player for encoder """
         self.logger = logger or logging.getLogger(__name__)
         BaseHTTPRequestHandler.__init__(self, *args)
@@ -400,8 +429,46 @@ class myJiveHandler(BaseHTTPRequestHandler):
 
         # do something with uri
         self.logger.debug("GOT URL: %s" %  self.path)
+        try:
+            if self.path.index('/newplayer') == 0:
+                new_player = self.path.split('/')[-1]
+                sq.setplayer(new_player)
+            else:
+                return None
+        except ValueError:
+            pass
+                
 
         return
+
+class MyHttpServer:
+    """ HTTP Server for changing the active player """
+    def __init__(self,squeeze,logger=None):
+        self.logger = logger or logging.getLogger(__name__)
+        self.squeeze = squeeze
+        self.logger.debug("Squeeze %s" % self.squeeze)
+
+        # start http server for Jive remote
+        self.t = Thread(target=self._select_player, args=())
+        self.t.start()
+
+    def _select_player(self):
+        """ Waits on http for the active player """
+
+	self.http_server = HTTPServer(('', jive_http_server_port), MyHttpHandler)
+	self.logger.info('Http Server started on port %i' % jive_http_server_port)
+	
+        #Wait forever for incoming http requests
+        self.logger.debug("HTTP Server Thread started")
+        try:
+            self.http_server.serve_forever()
+        except Exception as e:
+            self.logger.debug("Http Server closed")
+            pass
+
+    def destroy(self):
+        self.http_server.socket.close()
+
 
 if __name__ == '__main__':     # Program start from here
 
@@ -413,15 +480,17 @@ if __name__ == '__main__':     # Program start from here
     # main reboot handling
     Reboot()
 
-
     sq = MySqueeze(player_name)
     rt = MyRotary()
     ds = Display(60)
+    hs = MyHttpServer(sq)
 
     try:
         while True:
             time.sleep(0.2)
     except KeyboardInterrupt:  # When 'Ctrl+C' is pressed, the child program destroy() will be  executed.
+        sq.destroy()
+        hs.destroy()
         ds.destroy()
         GPIO.cleanup()             # Release resource
 
