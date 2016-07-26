@@ -420,6 +420,9 @@ class MyHttpHandler(BaseHTTPRequestHandler):
         self.logger = logger or logging.getLogger(__name__)
         BaseHTTPRequestHandler.__init__(self, *args)
 
+    def log_message(self, format, *args):
+        return
+
     #Handler for the GET requests
     def do_GET(self):
         self.send_response(200)
