@@ -238,6 +238,13 @@ class MySqueeze:
                     return play
             self.logger.error("Player %s not found" % name)
 
+    def show_players(self):
+        """ return a string of all players """
+        player_list = []
+        for player in self.players:
+            player_list.append(player['name'])
+        return " ".join(player_list)
+
     def get_players(self, arg1, stop_event):
             """ get all players """
             while(not stop_event.is_set()):
@@ -248,12 +255,12 @@ class MySqueeze:
                     if player['isplayer'] == 1 and player['connected'] == 1: 
                         if not player in self.players:
                             self.players.append(player)
-                            logger.info("Added player: %s" % player['name'])
+                            logger.info("Added player: %s (%s)" % (player['name'], self.show_players()))
                 # remove old players
                 for player in self.players:
                     if not player in players['players_loop']:
                         self.players.remove(player)
-                        logger.info("Deleted player: %s" % player['name'])
+                        logger.info("Deleted player: %s (%s)" % (player['name'], self.show_players()))
                 stop_event.wait(10)
 
     def _get_volume(self):
