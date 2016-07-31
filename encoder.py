@@ -254,31 +254,32 @@ class MySqueeze:
                     return play
             self.logger.error("Player %s not found" % name)
 
-    def show_players(self):
-        """ return a string of all players """
-        player_list = []
-        for player in self.players:
-            player_list.append(player['name'])
-        return " ".join(player_list)
-
     def get_players(self, arg1, stop_event):
             """ get all players """
             while(not stop_event.is_set()):
-                players = self.js_request(["",["players","0",]])['result']
-                self.logger.debug("%i player found" % len(players['players_loop']))
-                # Add new players
-                for new_player in players['players_loop']:
-                    if new_player['isplayer'] == 1 and new_player['connected'] == 1: 
-                        if not new_player in self.players:
-                            self.players.append(new_player)
-                            logger.debug("new player: %s (%s)" % (new_player['name'], new_player))
-                            logger.info("Added player: %s (%s)" % (new_player['name'], self.show_players()))
+                squeeze_player = []
+                for player in self.js_request(["",["players","0",]])['result']['players_loop']:
+                    squeeze_player.append(player)
+
+                self.logger.debug("%i player found (%s)" % (len(squeeze_player), squeeze_player))
+
                 # remove old players
                 for old_player in self.players:
-                    if not old_player in players['players_loop']:
+                    found = False
+                    for player in squeeze_player:
+                        if player['name'] == old_player:
+                            found = True
+                            break
+                    if not found:
                         self.players.remove(old_player)
-                        logger.debug("old player: %s (%s)" % (old_player['name'], old_player))
-                        logger.info("Deleted player: %s (%s)" % (old_player['name'], self.show_players()))
+                        logger.info("Deleted player: %s (%s)" % (old_player, ",".join(self.players)))
+
+                # Add new players
+                for new_player in squeeze_player:
+                    if new_player['isplayer'] == 1 and new_player['connected'] == 1: 
+                        if not new_player['name'] in self.players:
+                            self.players.append(new_player['name'])
+                            logger.info("Added player: %s (%s)" % (new_player['name'], ",".join(self.players)))
                 stop_event.wait(10)
 
     def _get_volume(self):
@@ -467,7 +468,6 @@ class MyHttpServer:
     def __init__(self,squeeze,logger=None):
         self.logger = logger or logging.getLogger(__name__)
         self.squeeze = squeeze
-        self.logger.debug("Squeeze %s" % self.squeeze)
 
         # start http server for Jive remote
         self.t = Thread(target=self._select_player, args=())
