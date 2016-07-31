@@ -25,9 +25,11 @@ RoBPin = 12    # pin12
 RoSPin = 13    # pin13
 LightPin = 15  # light pin
 MovePin = 16   # movement detector
+ChangeVTPin = 38
 rebootPin = 40
 
 display_vt = 5
+weather_vt = 6
 maxVolume = 100
 stepper = 10
 
@@ -50,6 +52,7 @@ class Display:
         self.count = 0
         self.is_on = False
         self.close = False
+        self.vt = display_vt
         global use_lightsensor
 
         # touch device
@@ -61,7 +64,7 @@ class Display:
         GPIO.setup(MovePin, GPIO.IN,pull_up_down=GPIO.PUD_DOWN)
 
         # start display
-        if self.change_vt(display_vt):
+        if self._change_vt(display_vt):
             self.logger.debug("Waiting for Display to change")
             time.sleep(0.3)
         self.on()
@@ -70,7 +73,11 @@ class Display:
         if use_lightsensor:
             GPIO.add_event_detect(MovePin, GPIO.RISING, callback=self.reset, bouncetime=500) # wait for raising
 
-    def change_vt(self,vt):
+        # Change VT 
+        GPIO.setup(ChangeVTPin, GPIO.IN,pull_up_down=GPIO.PUD_DOWN)    
+        GPIO.add_event_detect(ChangeVTPin, GPIO.RISING, callback=self.switchVT, bouncetime=1000)
+
+    def _change_vt(self,vt):
         current_vt = int(subprocess.check_output(["/bin/fgconsole"]))
         if current_vt != vt:
             self.logger.debug("Changing VT from %i to %i" % (current_vt, vt) )
@@ -127,12 +134,21 @@ class Display:
             except Exception,e:
                 pass
 
+    def switchVT(self, arg1):
+        """ switch between Player and weather """
+        self.logger.debug("Switching VT")
+        if self.vt == display_vt:
+            self._change_vt(weather_vt)
+            self.vt = weather_vt
+        else:
+            self._change_vt(display_vt)
+            self.vt = display_vt
+
     def off(self):
         if self.is_on:
             GPIO.output(LightPin, GPIO.LOW)
             self.logger.debug("Turning Display Off")
             self.is_on = False
-
 
     def on(self):
         if use_lightsensor:
@@ -225,9 +241,9 @@ class MySqueeze:
         if self.player['name'] != name:
             self.player = self._get_player(name)
             if self.player['name'] == name:
-                self.logger.info("new player is: %s" % name)
+                self.logger.info("new active player is: %s" % name)
             else:
-                self.logger.error("new player %s not found on Server" % name)
+                self.logger.error("new active player %s not found on Server" % name)
 
     def _get_player(self,name):
             """ how mayn players are there """
@@ -251,16 +267,18 @@ class MySqueeze:
                 players = self.js_request(["",["players","0",]])['result']
                 self.logger.debug("%i player found" % len(players['players_loop']))
                 # Add new players
-                for player in players['players_loop']:
-                    if player['isplayer'] == 1 and player['connected'] == 1: 
-                        if not player in self.players:
-                            self.players.append(player)
-                            logger.info("Added player: %s (%s)" % (player['name'], self.show_players()))
+                for new_player in players['players_loop']:
+                    if new_player['isplayer'] == 1 and new_player['connected'] == 1: 
+                        if not new_player in self.players:
+                            self.players.append(new_player)
+                            logger.debug("new player: %s (%s)" % (new_player['name'], new_player))
+                            logger.info("Added player: %s (%s)" % (new_player['name'], self.show_players()))
                 # remove old players
-                for player in self.players:
-                    if not player in players['players_loop']:
-                        self.players.remove(player)
-                        logger.info("Deleted player: %s (%s)" % (player['name'], self.show_players()))
+                for old_player in self.players:
+                    if not old_player in players['players_loop']:
+                        self.players.remove(old_player)
+                        logger.debug("old player: %s (%s)" % (old_player['name'], old_player))
+                        logger.info("Deleted player: %s (%s)" % (old_player['name'], self.show_players()))
                 stop_event.wait(10)
 
     def _get_volume(self):
@@ -394,7 +412,6 @@ class Reboot:
         self.count = 0
         self.timer = 0
 
-
     def reboot(self):
         self.logger.debug("REBOOTING")
         cow = subprocess.check_output(["/usr/games/cowsay", "REBOOT"])
@@ -406,12 +423,12 @@ class Reboot:
         tty.write(cow)
         for i in range(20):
             tty.write("\n")
-        ds.change_vt(1)
+        ds._change_vt(1)
         time.sleep(2)
         if do_reboot:
             subprocess.call(["/sbin/reboot"])
         else:
-            ds.change_vt(display_vt)
+            ds._change_vt(display_vt)
 
 
 class MyHttpHandler(BaseHTTPRequestHandler):
@@ -486,7 +503,7 @@ if __name__ == '__main__':     # Program start from here
 
     sq = MySqueeze(player_name)
     rt = MyRotary()
-    ds = Display(60)
+    ds = Display(300)
     hs = MyHttpServer(sq)
 
     try:
