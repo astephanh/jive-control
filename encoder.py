@@ -4,8 +4,7 @@ import subprocess
 import time
 import json
 import urllib2
-import logging,sys, os
-import socket
+import logging,sys, os, signal
 from evdev import InputDevice, categorize, ecodes
 from select import select
 from threading import Thread, Event, Lock
@@ -88,7 +87,7 @@ class Display:
     def _sleeper(self):
         while self.count < self.maxcount:
             if self.close:
-                self.logger.info("Destroying Timer")
+                self.logger.debug("Destroying Timer")
                 return True
 
             time.sleep(1) 
@@ -202,15 +201,8 @@ class MySqueeze:
 	# start amp if player is running
 	if self.is_running():
             self.logger.debug('player %s is running, turning amp on' % self.player['name'])
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(2)
             try:
-                s.connect((amp_host, amp_port))
-                logger.debug('Connected to amp on host %s, port: %i' % (amp_host, amp_port) )
-                s.send("%s\n" % 'AmpON')
-                logger.info("Amp Turned on")
-                s.close()
-                del s
+                urllib2.urlopen("http://%s:%i/AmpON" % (amp_host,amp_port)).read()
             except :
                 self.logger.debug('Unable to connect to amp host:%s' % amp_host)
 
@@ -491,8 +483,17 @@ class MyHttpServer:
         self.http_server.socket.close()
 
 
+def signal_term_handler(signal, frame):
+    logger.info('got SIGTERM')
+    sq.destroy()
+    hs.destroy()
+    ds.destroy()
+    GPIO.cleanup()             # Release resource
+    sys.exit(0)
+
 if __name__ == '__main__':     # Program start from here
 
+    signal.signal(signal.SIGTERM, signal_term_handler)
     GPIO.setmode(GPIO.BOARD)       # Numbers GPIOs by physical location
 
     logging.basicConfig(format='%(asctime)s %(levelname)s %(message)s', level=logging.INFO)
@@ -510,8 +511,5 @@ if __name__ == '__main__':     # Program start from here
         while True:
             time.sleep(0.2)
     except KeyboardInterrupt:  # When 'Ctrl+C' is pressed, the child program destroy() will be  executed.
-        sq.destroy()
-        hs.destroy()
-        ds.destroy()
-        GPIO.cleanup()             # Release resource
+        signal_term_handler
 
