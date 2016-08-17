@@ -19,13 +19,18 @@ url = 'http://rpi:9000/jsonrpc.js'
 player_id = 'b8:27:eb:3d:83:04'
 jive_http_server_port = 12345
 
+# Input GPIO
 RoAPin = 11    # pin11
 RoBPin = 12    # pin12
 RoSPin = 13    # pin13
-LightPin = 15  # light pin
 MovePin = 16   # movement detector
 ChangeVTPin = 38
 rebootPin = 40
+
+# Display Control
+DisplayPin = 15  # light pin
+DispLedPin = 19  # status of LightControl
+DispSwitchPin = 37
 
 display_vt = 5
 weather_vt = 6
@@ -37,56 +42,55 @@ player_name = 'tpi'
 amp_host = 'localhost'
 amp_port = 54321
 
-#use_lightsensor = False
-use_lightsensor = True
 #do_reboot = False
 do_reboot = True
 
 class Display:
     def __init__(self,timer,logger=None):
         """ light or no light"""
+        global use_lightsensor
+        self.vt = display_vt
         self.logger = logger or logging.getLogger(__name__)
         self.maxcount = timer
         self.DisplayLock = Lock()
         self.count = 0
         self.is_on = False
         self.close = False
-        self.vt = display_vt
-        global use_lightsensor
+        self.OnOff = 0
 
-        # touch device
-        self.dev = InputDevice('/dev/input/event1')
-        self.logger.debug("Touch Dev: %s" % self.dev)
-        
-        GPIO.setup(LightPin, GPIO.OUT)
-        GPIO.output(LightPin, GPIO.LOW)
+        GPIO.setup(DisplayPin, GPIO.OUT)
+        GPIO.output(DisplayPin, GPIO.HIGH)
         GPIO.setup(MovePin, GPIO.IN,pull_up_down=GPIO.PUD_DOWN)
 
         # start display
-        if self._change_vt(display_vt):
-            self.logger.debug("Waiting for Display to change")
-            time.sleep(0.3)
+        self._change_vt(display_vt)
         self.on()
 
         # light Sensor
-        if use_lightsensor:
-            GPIO.add_event_detect(MovePin, GPIO.RISING, callback=self.reset, bouncetime=500) # wait for raising
+        GPIO.add_event_detect(MovePin, GPIO.RISING, callback=self.reset, bouncetime=500) # wait for raising
 
         # Change VT 
-        GPIO.setup(ChangeVTPin, GPIO.IN,pull_up_down=GPIO.PUD_DOWN)    
-        GPIO.add_event_detect(ChangeVTPin, GPIO.RISING, callback=self.switchVT, bouncetime=1000)
+        GPIO.setup(ChangeVTPin, GPIO.IN,pull_up_down=GPIO.PUD_UP)    
+        GPIO.add_event_detect(ChangeVTPin, GPIO.FALLING, callback=self.switchVT, bouncetime=800)
+
+        # PIR Motion Sensor enable / disable switch
+        GPIO.setup(DispLedPin,GPIO.OUT)
+        self.led = GPIO.PWM(DispLedPin,50)
+        GPIO.setup(DispSwitchPin, GPIO.IN,pull_up_down=GPIO.PUD_UP)
+        GPIO.add_event_detect(DispSwitchPin, GPIO.FALLING, callback=self._switchOnOff, bouncetime=300)
 
     def _change_vt(self,vt):
         current_vt = int(subprocess.check_output(["/bin/fgconsole"]))
         if current_vt != vt:
             self.logger.debug("Changing VT from %i to %i" % (current_vt, vt) )
             subprocess.call(['/bin/chvt', str(vt)]) 
+            time.sleep(0.3)
             return True
         return False
 
     def _sleeper(self):
         while self.count < self.maxcount:
-            if self.close:
+            if self.close or self.OnOff == 1:
                 self.logger.debug("Destroying Timer")
                 return True
 
@@ -96,46 +100,29 @@ class Display:
             self.logger.debug("Counting: %i" % self.count)
             self.DisplayLock.release()
 
-        if use_lightsensor:
+        self.off()
+
+    def _switchOnOff(self, arg1):
+        """ switches Display permanetly on or off """
+        if self.OnOff == 0:
+            self.on()
+            self.led.ChangeFrequency(500)
+            self.led.start(20)
+            self.OnOff += 1
+        elif self.OnOff == 1:
             self.off()
+            self.led.ChangeFrequency(0.2)
+            self.led.ChangeDutyCycle(1)
+            self.OnOff += 1
         else:
+            self.led.stop()
+            self.OnOff = 0
+            self._change_vt(5)
             self.reset()
-
-    def _watch_key(self):
-        """ watch for touch movements if off """
-
-        # miss the first input (light off)
-        time.sleep(1)
-        grabed = False
-
-        while not grabed:
-            try:
-                self.dev.grab()
-                grabed = True
-            except Exception:
-                time.sleep(0.3)
-                pass
-            
-        # check for input
-        self.logger.info("starting touch detector")
-
-        while not self.close:
-            try:
-                self.logger.debug("waiting for input")
-                r,w,x = select([self.dev], [], [], 0.5)
-                for event in self.dev.read():
-                    if event.type == ecodes.EV_KEY:
-                        self.logger.debug(categorize(event))
-                        self.reset()
-                        self.dev.ungrab()
-                        self.logger.debug("Destroying touch detection")
-                        return True
-            except Exception,e:
-                pass
 
     def switchVT(self, arg1):
         """ switch between Player and weather """
-        self.logger.debug("Switching VT")
+        self.logger.info("Switching VT")
         if self.vt == display_vt:
             self._change_vt(weather_vt)
             self.vt = weather_vt
@@ -145,30 +132,31 @@ class Display:
 
     def off(self):
         if self.is_on:
-            GPIO.output(LightPin, GPIO.LOW)
+            GPIO.output(DisplayPin, GPIO.HIGH)
             self.logger.debug("Turning Display Off")
             self.is_on = False
 
     def on(self):
-        if use_lightsensor:
-            if not self.is_on:
-                # start sleeper thread
-                t = Thread(target=self._sleeper, args=())
-                t.start()
+        if not self.is_on:
+            # start sleeper thread
+            t = Thread(target=self._sleeper, args=())
+            t.start()
 
-                GPIO.output(LightPin, GPIO.HIGH)
-                self.logger.debug("Turning Display On")
-                self.is_on = True
+            GPIO.output(DisplayPin, GPIO.LOW)
+            self.logger.debug("Turning Display On")
+            self.is_on = True
 
     def reset(self,ev=None):
-        self.DisplayLock.acquire()
-        self.logger.debug("Resetting Counter")
-        self.count = 0
-        if not self.is_on:
-            self.on()
-        self.DisplayLock.release()
+        if self.OnOff == 0:
+            self.DisplayLock.acquire()
+            self.logger.debug("Resetting Counter")
+            self.count = 0
+            if not self.is_on and self.OnOff == 0: 
+                self.on()
+            self.DisplayLock.release()
 
     def destroy(self):
+        self.led.stop()
         self.close = True
 
 class MySqueeze:
@@ -321,8 +309,8 @@ class  MyRotary:
         self.Current_B = 1
         self.LockRotary = Lock()      # create lock for rotary switch
 
-        GPIO.setup(RoAPin, GPIO.IN)    # input mode
-        GPIO.setup(RoBPin, GPIO.IN)
+        GPIO.setup(RoAPin, GPIO.IN,pull_up_down=GPIO.PUD_UP)
+        GPIO.setup(RoBPin, GPIO.IN,pull_up_down=GPIO.PUD_UP)
         GPIO.setup(RoSPin,GPIO.IN,pull_up_down=GPIO.PUD_UP)
 
         GPIO.add_event_detect(RoAPin, GPIO.RISING, callback=self.rotate)
@@ -374,8 +362,8 @@ class Reboot:
         self.counting = False
         self.logger = logger or logging.getLogger(__name__)
 
-        GPIO.setup(rebootPin, GPIO.IN,pull_up_down=GPIO.PUD_DOWN)    
-        GPIO.add_event_detect(rebootPin, GPIO.RISING, callback=self.handle, bouncetime=500)
+        GPIO.setup(rebootPin, GPIO.IN,pull_up_down=GPIO.PUD_UP)
+        GPIO.add_event_detect(rebootPin, GPIO.FALLING, callback=self.handle, bouncetime=500)
 
     def handle(self,args):
         self.count += 1
@@ -484,7 +472,7 @@ class MyHttpServer:
 
 
 def signal_term_handler(signal, frame):
-    logger.info('got SIGTERM')
+    logger.info('shutting Down')
     sq.destroy()
     hs.destroy()
     ds.destroy()
@@ -511,5 +499,6 @@ if __name__ == '__main__':     # Program start from here
         while True:
             time.sleep(0.2)
     except KeyboardInterrupt:  # When 'Ctrl+C' is pressed, the child program destroy() will be  executed.
-        signal_term_handler
+        logger.info("ctrl-C pressed")
+        signal_term_handler(1,1)
 
