@@ -67,7 +67,7 @@ class Display:
         self.on()
 
         # light Sensor
-        GPIO.add_event_detect(MovePin, GPIO.RISING, callback=self.reset, bouncetime=500) # wait for raising
+        GPIO.add_event_detect(MovePin, GPIO.FALLING, callback=self.reset, bouncetime=500) # wait for raising
 
         # Change VT 
         GPIO.setup(ChangeVTPin, GPIO.IN,pull_up_down=GPIO.PUD_UP)    
@@ -101,6 +101,8 @@ class Display:
             self.DisplayLock.release()
 
         self.off()
+        self.logger.debug("Destroying Timer")
+        time.sleep(2)
 
     def _switchOnOff(self, arg1):
         """ switches Display permanetly on or off """
@@ -147,11 +149,12 @@ class Display:
             self.is_on = True
 
     def reset(self,ev=None):
+        self.logger.debug("Display.reset called")
         if self.OnOff == 0:
             self.DisplayLock.acquire()
             self.logger.debug("Resetting Counter")
             self.count = 0
-            if not self.is_on and self.OnOff == 0: 
+            if not self.is_on: 
                 self.on()
             self.DisplayLock.release()
 
